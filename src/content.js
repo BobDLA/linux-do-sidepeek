@@ -15,7 +15,8 @@
     postMode: "all",
     replyOrder: "default",
     drawerWidth: "medium",
-    drawerWidthCustom: 720
+    drawerWidthCustom: 720,
+    drawerMode: "push"
   };
   const DRAWER_WIDTHS = {
     narrow: "clamp(320px, 34vw, 680px)",
@@ -179,6 +180,14 @@
               <span class="ld-setting-hint">长帖下会优先显示最新一批回复，不代表把整帖一次性完整倒序</span>
             </label>
             <label class="ld-setting-field">
+              <span class="ld-setting-label">抽屉模式</span>
+              <select class="ld-setting-control" data-setting="drawerMode">
+                <option value="push">挤压模式</option>
+                <option value="overlay">浮层模式</option>
+              </select>
+              <span class="ld-setting-hint">浮层模式下抽屉悬浮于页面上方，不压缩原有内容</span>
+            </label>
+            <label class="ld-setting-field">
               <span class="ld-setting-label">抽屉宽度</span>
               <select class="ld-setting-control" data-setting="drawerWidth">
                 <option value="narrow">窄</option>
@@ -304,6 +313,17 @@
 
     if (!state.replyPanel?.hidden && !target.closest(".ld-drawer-reply-panel") && !target.closest(".ld-drawer-reply-fab")) {
       setReplyPanelOpen(false);
+    }
+
+    if (
+      state.settings.drawerMode === "overlay" &&
+      document.body.classList.contains(PAGE_OPEN_CLASS) &&
+      !target.closest(`#${ROOT_ID}`)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      closeDrawer();
+      return;
     }
 
     const link = target.closest("a[href]");
@@ -463,6 +483,7 @@
     document.body.classList.add(PAGE_OPEN_CLASS);
     state.root.setAttribute("aria-hidden", "false");
     setIframeModeEnabled(state.settings.previewMode === "iframe");
+    applyDrawerMode();
     updateSettingsPopoverPosition();
 
     loadTopic(topicUrl, fallbackTitle, topicIdHint);
@@ -478,6 +499,7 @@
     cancelReplyRequest();
 
     document.body.classList.remove(PAGE_OPEN_CLASS);
+    document.body.classList.remove("ld-drawer-mode-overlay");
     setIframeModeEnabled(false);
     state.root?.setAttribute("aria-hidden", "true");
     state.currentUrl = "";
@@ -2167,6 +2189,10 @@
         settings.drawerWidth = DEFAULT_SETTINGS.drawerWidth;
       }
 
+      if (settings.drawerMode !== "push" && settings.drawerMode !== "overlay") {
+        settings.drawerMode = DEFAULT_SETTINGS.drawerMode;
+      }
+
       settings.drawerWidthCustom = clampDrawerWidth(settings.drawerWidthCustom);
       return settings;
     } catch {
@@ -2288,6 +2314,12 @@
       return;
     }
 
+    if (key === "drawerMode") {
+      applyDrawerMode();
+      setSettingsPanelOpen(false);
+      return;
+    }
+
     refreshCurrentView();
     setSettingsPanelOpen(false);
   }
@@ -2297,6 +2329,7 @@
     syncSettingsUI();
     saveSettings();
     applyDrawerWidth();
+    applyDrawerMode();
     refreshCurrentView();
     setSettingsPanelOpen(false);
   }
@@ -2312,6 +2345,11 @@
     );
 
     updateSettingsPopoverPosition();
+  }
+
+  function applyDrawerMode() {
+    const isOverlay = state.settings.drawerMode === "overlay";
+    document.body.classList.toggle("ld-drawer-mode-overlay", isOverlay);
   }
 
   function clampDrawerWidth(value) {

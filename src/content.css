@@ -8,6 +8,19 @@ body.ld-drawer-page-open {
   transition: padding-right 0.2s ease;
 }
 
+body.ld-drawer-page-open.ld-drawer-mode-overlay {
+  padding-right: 0 !important;
+}
+
+body.ld-drawer-page-open.ld-drawer-mode-overlay::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 2147483646;
+  background: rgba(15, 23, 42, 0.18);
+  backdrop-filter: blur(1px);
+}
+
 body.ld-drawer-resizing,
 body.ld-drawer-resizing * {
   cursor: ew-resize !important;
