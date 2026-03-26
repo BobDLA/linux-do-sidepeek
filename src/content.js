@@ -10,6 +10,23 @@
   const IMAGE_PREVIEW_SCALE_MIN = 1;
   const IMAGE_PREVIEW_SCALE_MAX = 4;
   const IMAGE_PREVIEW_SCALE_STEP = 0.2;
+  const POST_ACTION_TYPE_LIKE = 2;
+  const POST_ACTION_TYPE_OFF_TOPIC = 3;
+  const POST_ACTION_TYPE_INAPPROPRIATE = 4;
+  const POST_ACTION_TYPE_NOTIFY_USER = 6;
+  const POST_ACTION_TYPE_NOTIFY_MODERATORS = 7;
+  const POST_ACTION_TYPE_SPAM = 8;
+  const POST_ACTION_TYPE_ILLEGAL = 10;
+  const POST_BOOKMARK_TYPE = "Post";
+  const POST_FLAG_OPTIONS = [
+    { id: POST_ACTION_TYPE_OFF_TOPIC, label: "偏离话题", requireMessage: false },
+    { id: POST_ACTION_TYPE_INAPPROPRIATE, label: "不当言论", requireMessage: false },
+    { id: POST_ACTION_TYPE_SPAM, label: "垃圾信息", requireMessage: false },
+    { id: 1002, label: "AIGC未截图", requireMessage: false },
+    { id: 1001, label: "违规推广", requireMessage: false },
+    { id: POST_ACTION_TYPE_ILLEGAL, label: "非法", requireMessage: true },
+    { id: POST_ACTION_TYPE_NOTIFY_MODERATORS, label: "其他内容", requireMessage: true }
+  ];
   const DEFAULT_SETTINGS = {
     previewMode: "smart",
     postMode: "all",
@@ -102,6 +119,7 @@
     currentTopic: null,
     currentLatestRepliesTopic: null,
     currentTargetSpec: null,
+    openFlagMenuPostId: null,
     replyTargetPostNumber: null,
     replyTargetLabel: "",
     abortController: null,
@@ -112,6 +130,8 @@
     isResizing: false,
     isLoadingMorePosts: false,
     isReplySubmitting: false,
+    pendingPostActionKeys: new Set(),
+    postActionStatusTimers: {},
     loadMoreError: "",
     loadMoreStatus: null,
     hasShownPreviewNotice: false
@@ -306,6 +326,10 @@
       setReplyPanelOpen(false);
     }
 
+    if (state.openFlagMenuPostId && !target.closest(".ld-post-flag-menu") && !target.closest(".ld-post-flag-trigger")) {
+      setOpenFlagMenuPostId(null);
+    }
+
     const link = target.closest("a[href]");
     if (!link || link.closest(`#${ROOT_ID}`)) {
       return;
@@ -341,6 +365,13 @@
       event.preventDefault();
       event.stopPropagation();
       setReplyPanelOpen(false);
+      return;
+    }
+
+    if (event.key === "Escape" && state.openFlagMenuPostId) {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpenFlagMenuPostId(null);
       return;
     }
 
@@ -449,8 +480,11 @@
     state.currentResolvedTargetPostNumber = null;
     state.currentTargetSpec = null;
     state.currentTopic = null;
+    state.openFlagMenuPostId = null;
     state.loadMoreError = "";
     state.isLoadingMorePosts = false;
+    state.pendingPostActionKeys.clear();
+    clearPostActionStatuses();
     resetReplyComposer();
     state.title.textContent = fallbackTitle || "加载中…";
     state.meta.textContent = "正在载入帖子内容…";
@@ -493,9 +527,12 @@
     state.currentTopic = null;
     state.currentLatestRepliesTopic = null;
     state.currentTargetSpec = null;
+    state.openFlagMenuPostId = null;
     state.meta.textContent = "";
     state.loadMoreError = "";
     state.isLoadingMorePosts = false;
+    state.pendingPostActionKeys.clear();
+    clearPostActionStatuses();
     resetReplyComposer();
     closeImagePreview();
     clearHighlight();
@@ -891,6 +928,9 @@
   function buildPostCard(post) {
     const article = document.createElement("article");
     article.className = "ld-post-card";
+    if (Number.isFinite(Number(post?.id))) {
+      article.dataset.postId = String(post.id);
+    }
     if (typeof post.post_number === "number") {
       article.dataset.postNumber = String(post.post_number);
     }
@@ -937,24 +977,223 @@
 
     const actions = document.createElement("div");
     actions.className = "ld-post-actions";
+    const actionBar = document.createElement("div");
+    actionBar.className = "ld-post-action-bar";
 
-    const replyButton = document.createElement("button");
-    replyButton.type = "button";
-    replyButton.className = "ld-post-reply-button";
-    replyButton.setAttribute("aria-label", `回复第 ${post.post_number || "?"} 条`);
-    replyButton.innerHTML = `
-      <span class="ld-post-reply-button-icon" aria-hidden="true">
+    const likeSummary = getPostActionSummary(post, POST_ACTION_TYPE_LIKE);
+    const likeButton = buildPostActionButton({
+      action: "like",
+      icon: "like",
+      label: "点赞",
+      count: Number.isFinite(Number(likeSummary?.count)) ? Number(likeSummary.count) : null,
+      active: Boolean(likeSummary?.acted),
+      disabled: !(likeSummary?.can_act || likeSummary?.can_undo) || isPostActionPending(post.id, "like")
+    });
+    likeButton.addEventListener("click", () => handleToggleLike(post));
+
+    const copyButton = buildPostActionButton({
+      action: "copy-link",
+      icon: "link",
+      label: "复制帖子链接",
+      disabled: false
+    });
+    copyButton.addEventListener("click", () => handleCopyPostLink(post));
+
+    const flagOptions = getAvailablePostFlagOptions(post);
+    let flagButton = null;
+    if (flagOptions.length > 0) {
+      flagButton = buildPostActionButton({
+        action: "flag",
+        icon: "flag",
+        label: "举报",
+        active: hasActedPostFlag(post),
+        disabled: isFlagMenuBusy(post, flagOptions)
+      });
+      flagButton.classList.add("ld-post-flag-trigger");
+      flagButton.setAttribute("aria-expanded", String(state.openFlagMenuPostId === post.id));
+      flagButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleFlagMenuForPost(post);
+      });
+    }
+
+    const bookmarkButton = buildPostActionButton({
+      action: "bookmark",
+      icon: "bookmark",
+      label: post.bookmarked ? "取消书签" : "加入书签",
+      active: Boolean(post.bookmarked),
+      disabled: isPostActionPending(post.id, "bookmark")
+    });
+    bookmarkButton.addEventListener("click", () => handleToggleBookmark(post));
+
+    const replyButton = buildPostActionButton({
+      action: "reply",
+      icon: "reply",
+      label: "回复这条",
+      disabled: state.isReplySubmitting
+    });
+    replyButton.classList.add("ld-post-reply-button");
+    replyButton.addEventListener("click", () => openReplyPanelForPost(post));
+
+    actionBar.append(likeButton, copyButton);
+    if (flagButton) {
+      actionBar.appendChild(flagButton);
+    }
+    actionBar.append(bookmarkButton, replyButton);
+    actions.appendChild(actionBar);
+
+    if (flagOptions.length > 0 && state.openFlagMenuPostId === post.id) {
+      const flagMenu = document.createElement("div");
+      flagMenu.className = "ld-post-flag-menu";
+
+      const flagMenuTitle = document.createElement("div");
+      flagMenuTitle.className = "ld-post-flag-menu-title";
+      flagMenuTitle.textContent = "选择举报原因";
+      flagMenu.appendChild(flagMenuTitle);
+
+      for (const option of flagOptions) {
+        const optionButton = document.createElement("button");
+        optionButton.type = "button";
+        optionButton.className = "ld-post-flag-option";
+        optionButton.textContent = option.label;
+        optionButton.disabled = isPostActionPending(post.id, `flag-${option.id}`);
+        optionButton.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          handleFlagPost(post, option);
+        });
+        flagMenu.appendChild(optionButton);
+      }
+
+      actions.appendChild(flagMenu);
+    }
+
+    const actionStatus = document.createElement("div");
+    actionStatus.className = "ld-post-action-status";
+    actionStatus.hidden = true;
+    actionStatus.setAttribute("aria-live", "polite");
+    actions.appendChild(actionStatus);
+
+    article.append(header, body, actions);
+    return article;
+  }
+
+  function buildPostActionButton(options = {}) {
+    const {
+      action = "",
+      icon = "link",
+      label = "",
+      count = null,
+      active = false,
+      disabled = false
+    } = options;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ld-post-action-button";
+    if (action) {
+      button.dataset.action = action;
+    }
+    if (label) {
+      button.setAttribute("aria-label", label);
+      button.title = label;
+    }
+    if (active) {
+      button.classList.add("is-active");
+    }
+    button.disabled = Boolean(disabled);
+
+    const iconSpan = document.createElement("span");
+    iconSpan.className = "ld-post-action-button-icon";
+    iconSpan.setAttribute("aria-hidden", "true");
+    iconSpan.innerHTML = buildPostActionIcon(icon);
+    button.appendChild(iconSpan);
+
+    if (Number.isFinite(count) && count > 0) {
+      const countSpan = document.createElement("span");
+      countSpan.className = "ld-post-action-button-count";
+      countSpan.textContent = String(count);
+      button.appendChild(countSpan);
+    } else if (action === "reply") {
+      const labelSpan = document.createElement("span");
+      labelSpan.className = "ld-post-action-button-label";
+      labelSpan.textContent = "回复这条";
+      button.appendChild(labelSpan);
+    }
+
+    return button;
+  }
+
+  function buildPostActionIcon(icon) {
+    if (icon === "like") {
+      return `
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M12 21.35 10.55 20.03C5.4 15.36 2 12.27 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.77-3.4 6.86-8.55 11.54L12 21.35Z" fill="currentColor"></path>
+        </svg>
+      `;
+    }
+
+    if (icon === "flag") {
+      return `
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M6 3a1 1 0 0 1 1 1v1h9.23a1 1 0 0 1 .83 1.55l-1.8 2.7 1.8 2.7A1 1 0 0 1 16.23 13H7v7a1 1 0 1 1-2 0V4a1 1 0 0 1 1-1Z" fill="currentColor"></path>
+        </svg>
+      `;
+    }
+
+    if (icon === "bookmark") {
+      return `
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M7 4.75A1.75 1.75 0 0 1 8.75 3h6.5A1.75 1.75 0 0 1 17 4.75V21l-5-3-5 3V4.75Z" fill="currentColor"></path>
+        </svg>
+      `;
+    }
+
+    if (icon === "reply") {
+      return `
         <svg viewBox="0 0 24 24" focusable="false">
           <path d="M4 12.5c0-4.14 3.36-7.5 7.5-7.5h7a1.5 1.5 0 0 1 0 3h-7A4.5 4.5 0 0 0 7 12.5v1.38l1.44-1.44a1.5 1.5 0 0 1 2.12 2.12l-4 4a1.5 1.5 0 0 1-2.12 0l-4-4a1.5 1.5 0 1 1 2.12-2.12L4 13.88V12.5Z" fill="currentColor"></path>
         </svg>
-      </span>
-      <span class="ld-post-reply-button-label">回复这条</span>
-    `;
-    replyButton.addEventListener("click", () => openReplyPanelForPost(post));
+      `;
+    }
 
-    actions.appendChild(replyButton);
-    article.append(header, body, actions);
-    return article;
+    return `
+      <svg viewBox="0 0 24 24" focusable="false">
+        <path d="M10.59 13.41a1 1 0 0 0 1.41 1.41l4.24-4.24a3 3 0 1 0-4.24-4.24L9.88 8.46a1 1 0 1 0 1.41 1.41l2.12-2.12a1 1 0 0 1 1.41 1.41L10.59 13.41ZM13.41 10.59a1 1 0 0 0-1.41-1.41l-4.24 4.24a3 3 0 0 0 4.24 4.24l2.12-2.12a1 1 0 1 0-1.41-1.41l-2.12 2.12a1 1 0 1 1-1.41-1.41l4.24-4.24Z" fill="currentColor"></path>
+      </svg>
+    `;
+  }
+
+  function getPostActionSummary(post, actionTypeId) {
+    return (post?.actions_summary || []).find((summary) => Number(summary?.id) === Number(actionTypeId)) || null;
+  }
+
+  function getAvailablePostFlagOptions(post) {
+    const availableFlagIds = new Set(
+      (post?.actions_summary || [])
+        .filter((summary) => {
+          const id = Number(summary?.id);
+          return id !== POST_ACTION_TYPE_LIKE && id !== POST_ACTION_TYPE_NOTIFY_USER && Boolean(summary?.can_act);
+        })
+        .map((summary) => Number(summary.id))
+    );
+
+    return POST_FLAG_OPTIONS.filter((option) => availableFlagIds.has(option.id));
+  }
+
+  function hasActedPostFlag(post) {
+    return (post?.actions_summary || []).some((summary) => {
+      const actionId = Number(summary?.id);
+      return actionId !== POST_ACTION_TYPE_LIKE && actionId !== POST_ACTION_TYPE_NOTIFY_USER && Boolean(summary?.acted);
+    });
+  }
+
+  function isFlagMenuBusy(post, options) {
+    if (!Array.isArray(options) || !options.length) {
+      return true;
+    }
+
+    return options.every((option) => isPostActionPending(post?.id, `flag-${option.id}`));
   }
 
   function handleDrawerBodyScroll() {
@@ -1379,8 +1618,11 @@
     state.currentResolvedTargetPostNumber = null;
     state.isLoadingMorePosts = false;
     state.isReplySubmitting = false;
+    state.openFlagMenuPostId = null;
+    state.pendingPostActionKeys.clear();
     state.loadMoreError = "";
     state.loadMoreStatus = null;
+    clearPostActionStatuses();
     state.title.textContent = fallbackTitle || "帖子预览";
     state.meta.textContent = "智能预览暂时不可用。";
     resetReplyComposer();
@@ -1411,8 +1653,11 @@
     state.currentResolvedTargetPostNumber = null;
     state.isLoadingMorePosts = false;
     state.isReplySubmitting = false;
+    state.openFlagMenuPostId = null;
+    state.pendingPostActionKeys.clear();
     state.loadMoreError = "";
     state.loadMoreStatus = null;
+    clearPostActionStatuses();
     state.title.textContent = fallbackTitle || "帖子预览";
     state.meta.textContent = forcedIframe ? "当前为整页模式。" : "接口预览失败，已回退为完整页面。";
     resetReplyComposer();
@@ -1718,6 +1963,132 @@
     }
 
     return data;
+  }
+
+  async function createPostAction(postId, postActionTypeId, options = {}) {
+    const csrfToken = getCsrfToken();
+    if (!csrfToken) {
+      throw new Error("未找到登录令牌，请刷新页面后重试");
+    }
+
+    const body = new URLSearchParams();
+    body.set("id", String(postId));
+    body.set("post_action_type_id", String(postActionTypeId));
+    if (options.message) {
+      body.set("message", options.message);
+    }
+
+    const response = await fetch(`${location.origin}/post_actions`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-CSRF-Token": csrfToken
+      },
+      body
+    });
+
+    const data = await readJsonResponse(response);
+    ensureJsonRequestSucceeded(response, data);
+    return data;
+  }
+
+  async function deletePostAction(postId, postActionTypeId) {
+    const csrfToken = getCsrfToken();
+    if (!csrfToken) {
+      throw new Error("未找到登录令牌，请刷新页面后重试");
+    }
+
+    const url = new URL(`${location.origin}/post_actions/${postId}`);
+    url.searchParams.set("post_action_type_id", String(postActionTypeId));
+
+    const response = await fetch(url.toString(), {
+      method: "DELETE",
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-CSRF-Token": csrfToken
+      }
+    });
+
+    const data = await readJsonResponse(response);
+    ensureJsonRequestSucceeded(response, data);
+    return data;
+  }
+
+  async function createBookmark(postId) {
+    const csrfToken = getCsrfToken();
+    if (!csrfToken) {
+      throw new Error("未找到登录令牌，请刷新页面后重试");
+    }
+
+    const body = new URLSearchParams();
+    body.set("bookmarkable_id", String(postId));
+    body.set("bookmarkable_type", POST_BOOKMARK_TYPE);
+
+    const response = await fetch(`${location.origin}/bookmarks`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-CSRF-Token": csrfToken
+      },
+      body
+    });
+
+    const data = await readJsonResponse(response);
+    ensureJsonRequestSucceeded(response, data);
+    return data;
+  }
+
+  async function deleteBookmark(bookmarkId) {
+    const csrfToken = getCsrfToken();
+    if (!csrfToken) {
+      throw new Error("未找到登录令牌，请刷新页面后重试");
+    }
+
+    const response = await fetch(`${location.origin}/bookmarks/${bookmarkId}`, {
+      method: "DELETE",
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-CSRF-Token": csrfToken
+      }
+    });
+
+    const data = await readJsonResponse(response);
+    ensureJsonRequestSucceeded(response, data);
+    return data;
+  }
+
+  async function readJsonResponse(response) {
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("json")) {
+      return null;
+    }
+
+    try {
+      return await response.json();
+    } catch {
+      return null;
+    }
+  }
+
+  function ensureJsonRequestSucceeded(response, data) {
+    if (response.ok && !(data && data.success === false)) {
+      return;
+    }
+
+    const message = Array.isArray(data?.errors) && data.errors.length > 0
+      ? data.errors.join("；")
+      : (data?.error || data?.message || `Unexpected response: ${response.status}`);
+    throw new Error(message);
   }
 
   function getCsrfToken() {
@@ -2227,6 +2598,265 @@
 
     if (state.replyCancelButton) {
       state.replyCancelButton.disabled = state.isReplySubmitting;
+    }
+  }
+
+  function renderCurrentTopicPreservingScroll(preserveScrollTop = state.drawerBody?.scrollTop || 0) {
+    if (!state.currentTopic || !state.currentUrl) {
+      return;
+    }
+
+    renderTopic(state.currentTopic, state.currentUrl, state.currentFallbackTitle, state.currentResolvedTargetPostNumber, {
+      latestRepliesTopic: state.currentLatestRepliesTopic,
+      targetSpec: state.currentTargetSpec,
+      preserveScrollTop
+    });
+  }
+
+  function setOpenFlagMenuPostId(postId) {
+    const normalizedPostId = Number.isFinite(Number(postId)) ? Number(postId) : null;
+    if (state.openFlagMenuPostId === normalizedPostId) {
+      return;
+    }
+
+    state.openFlagMenuPostId = normalizedPostId;
+    renderCurrentTopicPreservingScroll();
+  }
+
+  function toggleFlagMenuForPost(post) {
+    const postId = Number(post?.id);
+    if (!Number.isFinite(postId)) {
+      return;
+    }
+
+    setOpenFlagMenuPostId(state.openFlagMenuPostId === postId ? null : postId);
+  }
+
+  function makePendingPostActionKey(postId, actionName) {
+    return `${postId || "unknown"}::${actionName || "action"}`;
+  }
+
+  function isPostActionPending(postId, actionName) {
+    return state.pendingPostActionKeys.has(makePendingPostActionKey(postId, actionName));
+  }
+
+  function replacePostInTopic(topic, updatedPost) {
+    if (!topic || !updatedPost || typeof updatedPost !== "object") {
+      return topic;
+    }
+
+    return mergeTopicPreviewData(topic, {
+      post_stream: {
+        stream: [updatedPost.id],
+        posts: [updatedPost]
+      }
+    });
+  }
+
+  function updatePreviewPost(updatedPost) {
+    state.currentTopic = replacePostInTopic(state.currentTopic, updatedPost);
+    state.currentLatestRepliesTopic = replacePostInTopic(state.currentLatestRepliesTopic, updatedPost);
+  }
+
+  function clearPostActionStatuses() {
+    for (const timerId of Object.values(state.postActionStatusTimers)) {
+      clearTimeout(timerId);
+    }
+
+    state.postActionStatusTimers = {};
+  }
+
+  function setPostActionStatus(postId, message, tone = "info", timeoutMs = 2400) {
+    if (!Number.isFinite(Number(postId))) {
+      return;
+    }
+
+    const card = state.content?.querySelector(`.ld-post-card[data-post-id="${postId}"]`);
+    const status = card?.querySelector(".ld-post-action-status");
+    if (!(status instanceof HTMLElement)) {
+      return;
+    }
+
+    const timerKey = String(postId);
+    if (state.postActionStatusTimers[timerKey]) {
+      clearTimeout(state.postActionStatusTimers[timerKey]);
+    }
+
+    status.hidden = false;
+    status.dataset.tone = tone;
+    status.textContent = message;
+
+    state.postActionStatusTimers[timerKey] = window.setTimeout(() => {
+      status.hidden = true;
+      status.textContent = "";
+      delete state.postActionStatusTimers[timerKey];
+    }, timeoutMs);
+  }
+
+  async function handleCopyPostLink(post) {
+    const postId = Number(post?.id);
+    const postUrl = buildPostUrl(post);
+
+    if (!postUrl) {
+      setPostActionStatus(postId, "未找到帖子链接", "error");
+      return;
+    }
+
+    try {
+      await copyTextToClipboard(postUrl);
+      setPostActionStatus(postId, "已复制帖子链接", "success");
+    } catch (error) {
+      setPostActionStatus(postId, error?.message || "复制失败", "error");
+    }
+  }
+
+  async function handleToggleLike(post) {
+    const likeSummary = getPostActionSummary(post, POST_ACTION_TYPE_LIKE);
+    if (!likeSummary) {
+      setPostActionStatus(post?.id, "当前帖子暂不支持点赞", "error");
+      return;
+    }
+
+    await performPostMutation(post, "like", () => {
+      if (likeSummary.can_undo) {
+        return deletePostAction(post.id, POST_ACTION_TYPE_LIKE);
+      }
+      return createPostAction(post.id, POST_ACTION_TYPE_LIKE);
+    }, {
+      successMessage: likeSummary.can_undo ? "已取消点赞" : "已点赞"
+    });
+  }
+
+  async function handleToggleBookmark(post) {
+    const isBookmarked = Boolean(post?.bookmarked);
+    const bookmarkId = Number(post?.bookmark_id);
+
+    await performPostMutation(post, "bookmark", async () => {
+      if (isBookmarked && Number.isFinite(bookmarkId)) {
+        await deleteBookmark(bookmarkId);
+        return {
+          ...post,
+          bookmarked: false,
+          bookmark_id: null,
+          bookmark_name: null,
+          bookmark_reminder_at: null
+        };
+      }
+
+      const createdBookmark = await createBookmark(post.id);
+      return {
+        ...post,
+        bookmarked: true,
+        bookmark_id: createdBookmark?.id || post?.bookmark_id || null
+      };
+    }, {
+      successMessage: isBookmarked ? "已移除书签" : "已加入书签"
+    });
+  }
+
+  async function handleFlagPost(post, option) {
+    if (!post || !option) {
+      return;
+    }
+
+    let message = "";
+    if (option.requireMessage) {
+      const input = window.prompt(`请补充“${option.label}”的举报说明：`, "");
+      if (input === null) {
+        return;
+      }
+      message = input.trim();
+      if (!message) {
+        setPostActionStatus(post.id, "该举报类型需要补充说明", "error");
+        return;
+      }
+    }
+
+    await performPostMutation(post, `flag-${option.id}`, () => createPostAction(post.id, option.id, { message }), {
+      successMessage: `已提交“${option.label}”举报`
+    });
+  }
+
+  async function performPostMutation(post, actionName, task, options = {}) {
+    const postId = Number(post?.id);
+    if (!Number.isFinite(postId) || typeof task !== "function" || !state.currentTopic) {
+      return;
+    }
+
+    const pendingKey = makePendingPostActionKey(postId, actionName);
+    if (state.pendingPostActionKeys.has(pendingKey)) {
+      return;
+    }
+
+    const preserveScrollTop = state.drawerBody?.scrollTop || 0;
+    let updatedPost = null;
+    let statusMessage = "";
+    let statusTone = "success";
+
+    state.pendingPostActionKeys.add(pendingKey);
+    state.openFlagMenuPostId = null;
+    renderCurrentTopicPreservingScroll(preserveScrollTop);
+
+    try {
+      updatedPost = await task();
+      statusMessage = options.successMessage || "";
+    } catch (error) {
+      statusTone = "error";
+      statusMessage = error?.message || "操作失败";
+    } finally {
+      state.pendingPostActionKeys.delete(pendingKey);
+
+      if (updatedPost) {
+        updatePreviewPost(updatedPost);
+      }
+
+      renderCurrentTopicPreservingScroll(preserveScrollTop);
+
+      if (statusMessage) {
+        setPostActionStatus(postId, statusMessage, statusTone);
+      }
+    }
+  }
+
+  function buildPostUrl(post) {
+    if (typeof post?.post_url === "string" && post.post_url.trim()) {
+      try {
+        return new URL(post.post_url, location.origin).toString();
+      } catch {
+        return post.post_url.trim();
+      }
+    }
+
+    if (state.currentUrl && Number.isFinite(Number(post?.post_number))) {
+      const url = new URL(state.currentUrl);
+      url.hash = "";
+      url.search = "";
+      return `${url.toString().replace(/\/$/, "")}/${post.post_number}`;
+    }
+
+    return state.currentUrl || location.href;
+  }
+
+  async function copyTextToClipboard(text) {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "readonly");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    textarea.style.pointerEvents = "none";
+    document.body.appendChild(textarea);
+    textarea.select();
+
+    const copied = document.execCommand("copy");
+    textarea.remove();
+
+    if (!copied) {
+      throw new Error("浏览器拒绝写入剪贴板");
     }
   }
 

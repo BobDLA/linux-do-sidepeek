@@ -570,12 +570,22 @@ body.ld-drawer-page-open #ld-drawer-root {
 }
 
 #ld-drawer-root .ld-post-actions {
-  display: flex;
-  justify-content: flex-end;
+  display: grid;
+  justify-items: end;
+  gap: 8px;
   padding: 0 16px 14px;
 }
 
-#ld-drawer-root .ld-post-reply-button {
+#ld-drawer-root .ld-post-action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+#ld-drawer-root .ld-post-action-button,
+#ld-drawer-root .ld-post-reply-button,
+#ld-drawer-root .ld-post-flag-option {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -587,26 +597,95 @@ body.ld-drawer-page-open #ld-drawer-root {
   font-size: 12px;
   line-height: 1;
   cursor: pointer;
+  transition: border-color 0.18s ease, color 0.18s ease, background-color 0.18s ease, transform 0.18s ease;
 }
 
-#ld-drawer-root .ld-post-reply-button:hover {
+#ld-drawer-root .ld-post-action-button:hover,
+#ld-drawer-root .ld-post-reply-button:hover,
+#ld-drawer-root .ld-post-flag-option:hover {
   border-color: var(--tertiary, #3b82f6);
   color: var(--tertiary, #3b82f6);
+  transform: translateY(-1px);
 }
 
+#ld-drawer-root .ld-post-action-button:disabled,
+#ld-drawer-root .ld-post-reply-button:disabled,
+#ld-drawer-root .ld-post-flag-option:disabled {
+  opacity: 0.56;
+  cursor: not-allowed;
+  transform: none;
+}
+
+#ld-drawer-root .ld-post-action-button.is-active {
+  border-color: color-mix(in srgb, var(--tertiary, #3b82f6) 30%, rgba(255, 255, 255, 0.2));
+  background: color-mix(in srgb, var(--tertiary, #3b82f6) 16%, var(--secondary, #fff));
+}
+
+#ld-drawer-root .ld-post-action-button[data-action="like"].is-active {
+  color: #ff6b8a;
+}
+
+#ld-drawer-root .ld-post-action-button[data-action="bookmark"].is-active {
+  color: #17a0d7;
+}
+
+#ld-drawer-root .ld-post-action-button[data-action="flag"].is-active {
+  color: #f59e0b;
+}
+
+#ld-drawer-root .ld-post-action-button-icon,
 #ld-drawer-root .ld-post-reply-button-icon {
   width: 14px;
   height: 14px;
   display: inline-flex;
 }
 
+#ld-drawer-root .ld-post-action-button-icon svg,
 #ld-drawer-root .ld-post-reply-button-icon svg {
   width: 14px;
   height: 14px;
 }
 
+#ld-drawer-root .ld-post-action-button-count,
+#ld-drawer-root .ld-post-action-button-label,
 #ld-drawer-root .ld-post-reply-button-label {
   white-space: nowrap;
+}
+
+#ld-drawer-root .ld-post-flag-menu {
+  width: min(280px, 100%);
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid var(--primary-low, rgba(15, 23, 42, 0.12));
+  background: color-mix(in srgb, var(--secondary, #fff) 96%, rgba(15, 23, 42, 0.04));
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.14);
+}
+
+#ld-drawer-root .ld-post-flag-menu-title {
+  font-size: 12px;
+  color: var(--primary-medium, rgba(15, 23, 42, 0.64));
+}
+
+#ld-drawer-root .ld-post-flag-option {
+  justify-content: center;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+#ld-drawer-root .ld-post-action-status {
+  min-height: 18px;
+  font-size: 12px;
+  color: var(--primary-medium, rgba(15, 23, 42, 0.64));
+}
+
+#ld-drawer-root .ld-post-action-status[data-tone="success"] {
+  color: #0f766e;
+}
+
+#ld-drawer-root .ld-post-action-status[data-tone="error"] {
+  color: #dc2626;
 }
 
 #ld-drawer-root .ld-post-body > :first-child {
@@ -835,6 +914,16 @@ body.ld-drawer-page-open #ld-drawer-root {
     bottom: max(72px, env(safe-area-inset-bottom, 0px) + 56px);
     width: auto;
     transform: none;
+  }
+
+  #ld-drawer-root .ld-post-actions,
+  #ld-drawer-root .ld-post-action-bar {
+    justify-items: stretch;
+    justify-content: flex-start;
+  }
+
+  #ld-drawer-root .ld-post-flag-menu {
+    width: 100%;
   }
 }
 
